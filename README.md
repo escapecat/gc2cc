@@ -44,12 +44,13 @@ Open a **fresh** shell after install so PATH refreshes.
 
 `install.ps1` is idempotent and tolerates every prior gc2cc layout we've ever shipped:
 
-The compatibility patch is also idempotent. It sends the original Responses
-request first. Only when Copilot rejects encrypted replay content before any
-answer or tool output does it remove the oldest encrypted reasoning item from
-the in-memory request and retry, up to 32 times. It stops at the first success,
-does not edit the Codex transcript or visible chat messages, and logs only the
-number of removed items.
+The compatibility patch is also idempotent. It covers both HTTP and WebSocket
+Responses transports and sends the original request first. Only when Copilot
+rejects encrypted replay content before any answer or tool output does it
+remove the oldest encrypted reasoning item from the in-memory request and
+retry, up to 32 times. It stops at the first success, does not edit the Codex
+transcript or visible chat messages, and logs only the transport and number of
+removed items.
 
 - **Pre-NSSM Scheduled Task** (`\gc2cc\gc2cc-copilot-api`): stopped and unregistered.
 - **NSSM + bakapiano (git clone + bun)**: stale `copilot-api/` and `run-proxy.ps1` are deleted; the service is removed and re-registered to exec `node` on the new npm-installed `@jeffreycao/copilot-api` entrypoint.
