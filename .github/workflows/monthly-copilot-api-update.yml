@@ -1,0 +1,102 @@
+name: Monthly copilot-api update
+
+on:
+  schedule:
+    - cron: "17 2 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NPM_REGISTRY: https://packagefeedproxy.microsoft.io/npm/
+      UPDATE_BRANCH: automation/copilot-api-update
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check for an installable update
+        id: version
+        shell: pwsh
+        run: |
+          $source = Get-Content install.ps1 -Raw
+          $match = [regex]::Match($source, '@jeffreycao/copilot-api@(?<version>\d+\.\d+\.\d+)')
+          if (-not $match.Success) { throw 'Unable to find the pinned copilot-api version.' }
+          $current = $match.Groups['version'].Value
+          $latest = (& npm view '@jeffreycao/copilot-api' version --registry $env:NPM_REGISTRY).Trim()
+          if ($LASTEXITCODE -ne 0 -or $latest -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Unable to resolve a stable copilot-api version from $env:NPM_REGISTRY"
+          }
+          "current=$current" >> $env:GITHUB_OUTPUT
+          "latest=$latest" >> $env:GITHUB_OUTPUT
+          $available = ([version]$latest -gt [version]$current).ToString().ToLowerInvariant()
+          "available=$available" >> $env:GITHUB_OUTPUT
+
+      - name: Update the pinned version
+        if: steps.version.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          $current = '${{ steps.version.outputs.current }}'
+          $latest = '${{ steps.version.outputs.latest }}'
+          foreach ($path in @('install.ps1', 'README.md', 'tests/install-package-smoke.ps1')) {
+            $source = Get-Content $path -Raw
+            $updated = $source.Replace("@jeffreycao/copilot-api@$current", "@jeffreycao/copilot-api@$latest")
+            if ($updated -eq $source) { throw "Expected version reference was not found in $path" }
+            [IO.File]::WriteAllText((Resolve-Path $path), $updated, [Text.UTF8Encoding]::new($false))
+          }
+
+      - name: Run offline smoke tests
+        if: steps.version.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          ./tests/install-package-smoke.ps1
+          ./tests/nssm-configuration-smoke.ps1
+
+      - name: Create or update pull request
+        if: steps.version.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          $current = '${{ steps.version.outputs.current }}'
+          $latest = '${{ steps.version.outputs.latest }}'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B $env:UPDATE_BRANCH
+          git add install.ps1 README.md tests/install-package-smoke.ps1
+          git commit -m "chore: update copilot-api to $latest"
+          git push --force-with-lease origin "HEAD:$env:UPDATE_BRANCH"
+
+          $number = gh pr list --head $env:UPDATE_BRANCH --base main --state open --json number --jq '.[0].number'
+          if (-not $number) {
+            $body = @"
+          ## Summary
+          - update the pinned copilot-api package from $current to $latest
+          - use the latest stable version available from the Microsoft npm proxy
+
+          ## Automated validation
+          - install package smoke test
+          - NSSM configuration smoke test
+
+          ## Manual validation required before merge
+          - isolated proxy install and service restart
+          - Codex Responses, tools, images, and session resume
+          - Mori app-server start and resume
+          "@
+            gh pr create --base main --head $env:UPDATE_BRANCH `
+              --title "chore: update copilot-api to $latest" `
+              --body $body
+            $number = gh pr list --head $env:UPDATE_BRANCH --base main --state open --json number --jq '.[0].number'
+          }
+
+          @{ reviewers = @('escapecat') } | ConvertTo-Json -Compress |
+            gh api "repos/${{ github.repository }}/pulls/$number/requested_reviewers" `
+              --method POST --input -

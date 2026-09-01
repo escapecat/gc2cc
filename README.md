@@ -208,6 +208,14 @@ Either path always runs `npm install -g @jeffreycao/copilot-api@2.3.1`, so a re-
 
 > **Heads-up:** the upgrade stops the running service, swaps it, and restarts. There's a 1–3s window where `localhost:4141` is unreachable. Don't `ccp upgrade` while a long-running `claude` task is mid-flight.
 
+On the first day of each month, GitHub Actions checks the Microsoft npm proxy
+for a newer stable `@jeffreycao/copilot-api` version. When one is available it
+updates the pinned version, runs offline installer tests, opens or refreshes a
+single upgrade PR, and requests review from `@escapecat`. The review request
+appears in GitHub Notifications and is also emailed when review-request email
+notifications are enabled. Version PRs are never merged or deployed
+automatically; the staging checks listed in the PR remain required.
+
 ## Uninstall
 
 ```powershell
