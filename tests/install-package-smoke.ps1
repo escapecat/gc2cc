@@ -15,7 +15,7 @@ $errors = $null
 if ($errors) { throw "install.ps1 has parser errors: $errors" }
 
 foreach ($required in @(
-    "@jeffreycao/copilot-api@2.3.1",
+    "@jeffreycao/copilot-api@2.3.3",
     "Name = 'useResponsesApiWebSocket'; Value = `$false",
     "'contextManagement'",
     "'responses'",

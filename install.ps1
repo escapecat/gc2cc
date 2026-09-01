@@ -26,7 +26,7 @@ param(
     [int]    $Port         = 4141,
     [string] $ServiceName  = 'gc2cc-copilot-api',
     [string] $InstallDir   = (Join-Path $env:LOCALAPPDATA 'gc2cc'),
-    [string] $NpmPackage   = '@jeffreycao/copilot-api@2.3.1',
+    [string] $NpmPackage   = '@jeffreycao/copilot-api@2.3.3',
     [string] $NpmRegistry  = '',
     [string] $PagesBaseUrl = 'https://escapecat.github.io/gc2cc',
     # Primary: vendored zip on our own GitHub Release (byte-identical mirror
