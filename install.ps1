@@ -26,7 +26,7 @@ param(
     [int]    $Port         = 4141,
     [string] $ServiceName  = 'gc2cc-copilot-api',
     [string] $InstallDir   = (Join-Path $env:LOCALAPPDATA 'gc2cc'),
-    [string] $NpmPackage   = '@jeffreycao/copilot-api@1.14.14',
+    [string] $NpmPackage   = '@jeffreycao/copilot-api@2.3.1',
     [string] $NpmRegistry  = '',
     [string] $PagesBaseUrl = 'https://escapecat.github.io/gc2cc',
     # Primary: vendored zip on our own GitHub Release (byte-identical mirror
@@ -107,16 +107,58 @@ function Resolve-NpmRegistry {
     return $registry
 }
 
-function Resolve-CopilotPatchPath {
+function Get-NssmConfigurationMismatches {
     param(
-        [string] $ScriptRoot,
-        [Parameter(Mandatory = $true)][string] $TargetInstallDir
+        [object] $Service,
+        [object] $Parameters,
+        [string] $ExitAction,
+        [string] $ExpectedDisplayName,
+        [string] $ExpectedApplication,
+        [string] $ExpectedArguments,
+        [string] $ExpectedDirectory,
+        [string] $ExpectedUserHome,
+        [string] $ExpectedLog
     )
-    if (-not [string]::IsNullOrWhiteSpace($ScriptRoot)) {
-        $sibling = Join-Path $ScriptRoot 'patch-copilot-api.ps1'
-        if (Test-Path -LiteralPath $sibling) { return $sibling }
+    $mismatches = @()
+    $expected = @{
+        Application     = $ExpectedApplication
+        AppParameters   = $ExpectedArguments
+        AppDirectory    = $ExpectedDirectory
+        AppStdout       = $ExpectedLog
+        AppStderr       = $ExpectedLog
+        AppRestartDelay = '1000'
+        AppRotateFiles  = '1'
+        AppRotateOnline = '1'
+        AppRotateBytes  = '5242880'
     }
-    return Join-Path $TargetInstallDir 'patch-copilot-api.ps1'
+    foreach ($name in $expected.Keys) {
+        $actual = [string]$Parameters.$name
+        if (-not [string]::Equals($actual.Trim(), [string]$expected[$name], [StringComparison]::OrdinalIgnoreCase)) {
+            $mismatches += "$name expected '$($expected[$name])' but found '$actual'"
+        }
+    }
+    foreach ($entry in @(
+        "USERPROFILE=$ExpectedUserHome",
+        "HOME=$ExpectedUserHome",
+        'NODE_OPTIONS=--no-warnings'
+    )) {
+        if (@($Parameters.AppEnvironmentExtra) -notcontains $entry) {
+            $mismatches += "AppEnvironmentExtra is missing '$entry'"
+        }
+    }
+    if ([string]$Service.ObjectName -ne 'LocalSystem') {
+        $mismatches += "ObjectName expected 'LocalSystem' but found '$($Service.ObjectName)'"
+    }
+    if ([string]$Service.DisplayName -ne $ExpectedDisplayName) {
+        $mismatches += "DisplayName expected '$ExpectedDisplayName' but found '$($Service.DisplayName)'"
+    }
+    if ([int]$Service.Start -ne 2) {
+        $mismatches += "Start expected '2' but found '$($Service.Start)'"
+    }
+    if ($ExitAction -ne 'Restart') {
+        $mismatches += "AppExit Default expected 'Restart' but found '$ExitAction'"
+    }
+    return $mismatches
 }
 
 # ---------- error trap: keep the elevated window open ----------
@@ -380,31 +422,6 @@ if (-not (Test-Path $copilotEntry)) {
 }
 Ok "copilot-api installed: $copilotCmd"
 
-# Reapply gc2cc's narrow, version-checked encrypted replay recovery after npm
-# replaces the proxy bundle. It changes only an in-memory upstream request and
-# never edits Codex's persisted transcript.
-$copilotPackageRoot = Join-Path $NpmGlobal 'node_modules\@jeffreycao\copilot-api'
-$copilotPatch = Resolve-CopilotPatchPath `
-    -ScriptRoot $PSScriptRoot `
-    -TargetInstallDir $InstallDir
-if (-not (Test-Path -LiteralPath $copilotPatch)) {
-    # `irm install.ps1 | iex` and the UAC child have only install.ps1 locally.
-    # Fetch the companion from the same published Pages revision.
-    $copilotPatch = Join-Path $InstallDir 'patch-copilot-api.ps1'
-    try {
-        Invoke-WebRequest -Uri "$PagesBaseUrl/patch-copilot-api.ps1" -OutFile $copilotPatch -UseBasicParsing
-    } catch {
-        Die "Could not download compatibility patch from $PagesBaseUrl`: $_"
-    }
-}
-
-try {
-    & $copilotPatch -PackageRoot $copilotPackageRoot
-} catch {
-    Die "Could not apply copilot-api encrypted replay recovery: $_"
-}
-Ok 'copilot-api encrypted replay recovery is installed'
-
 $nodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $nodeExe) { Die "node.exe not on PATH even after Ensure-Cmd; aborting." }
 
@@ -450,6 +467,7 @@ foreach ($p in @('\gc2cc\','\')) {
 # stop confusing future debugging -- once switched to npm we never go back.
 foreach ($legacy in @(
     (Join-Path $InstallDir 'copilot-api'),
+    (Join-Path $InstallDir 'patch-copilot-api.ps1'),
     (Join-Path $InstallDir 'run-proxy.ps1'),
     (Join-Path $InstallDir 'run-proxy.vbs')
 )) {
@@ -466,10 +484,8 @@ foreach ($legacy in @(
 # regardless of the 1M window cxp advertises to Codex. That server-driven
 # compaction arrives as a `Compaction` stream item the client just applies, so
 # it is invisible to Codex's own auto-compact limits and cannot be tuned from the
-# cxp side. copilot-api <=1.13.19 uses the flat
-# `useResponsesApiContextManagement` switch; >=1.13.20 uses
-# `contextManagement.responses`. Setting the applicable switch false stops the
-# injection entirely. ccp/cxp already own compaction client-side
+# cxp side. `contextManagement.responses=false` stops the injection entirely.
+# ccp/cxp already own compaction client-side
 # (model_auto_compact_token_limit), so disabling the proxy layer is safe and is
 # what actually delivers the full advertised context window.
 #
@@ -488,8 +504,7 @@ try {
         $cfgObj = [pscustomobject]@{}
     }
     foreach ($setting in @(
-        @{ Name = 'useResponsesApiContextManagement'; Value = $false },
-        @{ Name = 'useResponsesApiWebSocket';         Value = $false }
+        @{ Name = 'useResponsesApiWebSocket'; Value = $false }
     )) {
         # PSCustomObject from ConvertFrom-Json: assign if present, Add-Member if
         # not (direct assignment to a missing property is a no-op on PS5.1).
@@ -499,9 +514,7 @@ try {
             $cfgObj | Add-Member -MemberType NoteProperty -Name $setting.Name -Value $setting.Value
         }
     }
-    # 1.13.20 replaced the legacy flat context-management switch with a nested
-    # object. Set both schemas so the public -NpmPackage override remains safe
-    # for older versions while the pinned package follows the current schema.
+    # copilot-api 2.x uses a nested object for Responses context management.
     $contextManagement = $null
     if ($cfgObj.PSObject.Properties.Name -contains 'contextManagement') {
         $contextManagement = $cfgObj.contextManagement
@@ -548,9 +561,14 @@ if ($squatters) { Start-Sleep -Milliseconds 500 }
 
 Info "Registering service '$ServiceName' (port $Port) via NSSM..."
 # Service exec'd: node.exe <copilot-api dist/main.js> start --port <port>
+$nssmDisplayName = if ($ServiceName -eq 'gc2cc-copilot-api') {
+    'gc2cc Copilot API proxy'
+} else {
+    "gc2cc Copilot API proxy ($ServiceName)"
+}
 & $nssm install     $ServiceName $nodeExe $copilotEntry start --port $Port | Out-Null
 & $nssm set $ServiceName AppDirectory  $InstallDir | Out-Null
-& $nssm set $ServiceName DisplayName   'gc2cc Copilot API proxy' | Out-Null
+& $nssm set $ServiceName DisplayName   $nssmDisplayName | Out-Null
 & $nssm set $ServiceName Description   'GitHub Copilot -> OpenAI/Anthropic proxy (caozhiyuan/copilot-api @jeffreycao/copilot-api)' | Out-Null
 & $nssm set $ServiceName Start         SERVICE_AUTO_START | Out-Null
 & $nssm set $ServiceName ObjectName    LocalSystem | Out-Null
@@ -570,6 +588,29 @@ Info "Registering service '$ServiceName' (port $Port) via NSSM..."
 # Auto-restart on crash with a 1s throttle.
 & $nssm set $ServiceName AppExit Default Restart | Out-Null
 & $nssm set $ServiceName AppRestartDelay 1000 | Out-Null
+
+$serviceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
+$parametersRegistryPath = Join-Path $serviceRegistryPath 'Parameters'
+$exitRegistryPath = Join-Path $parametersRegistryPath 'AppExit'
+$serviceConfig = Get-ItemProperty -LiteralPath $serviceRegistryPath
+$nssmConfig = Get-ItemProperty -LiteralPath $parametersRegistryPath
+$exitAction = (Get-ItemProperty -LiteralPath $exitRegistryPath).'(default)'
+$expectedArguments = "$copilotEntry start --port $Port"
+$expectedLog = Join-Path $LogDir 'copilot-api.log'
+$configurationMismatches = @(Get-NssmConfigurationMismatches `
+    -Service $serviceConfig `
+    -Parameters $nssmConfig `
+    -ExitAction $exitAction `
+    -ExpectedDisplayName $nssmDisplayName `
+    -ExpectedApplication $nodeExe `
+    -ExpectedArguments $expectedArguments `
+    -ExpectedDirectory $InstallDir `
+    -ExpectedUserHome $UserHome `
+    -ExpectedLog $expectedLog)
+if ($configurationMismatches.Count -gt 0) {
+    Die "NSSM configuration validation failed for '$ServiceName': $($configurationMismatches -join '; ')"
+}
+Ok "NSSM configuration validated for '$ServiceName'"
 
 Start-Service -Name $ServiceName
 
