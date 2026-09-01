@@ -31,26 +31,17 @@ The installer will:
 2. Install missing prereqs (`node`, `winget`) — `git` and `bun` are no longer required.
 3. Read and print the global npm source (`npm config get registry --location=global`); every package install explicitly uses that URL via `--registry`.
 4. Download `nssm.exe` from our GitHub Release mirror into `%LOCALAPPDATA%\gc2cc\bin\` (with `nssm.cc` as fallback).
-5. `npm install -g @jeffreycao/copilot-api@1.14.14` into a private prefix at `%LOCALAPPDATA%\gc2cc\npm\global\` (so the LocalSystem service has a stable path independent of the user's npm prefix).
-6. Apply gc2cc's version-checked encrypted-replay recovery patch to that private proxy installation.
-7. Prompt you once for **GitHub Copilot device-code auth** (skipped on re-runs if a token is already present).
-8. Register the `gc2cc-copilot-api` Windows Service (LocalSystem, auto-start, crash-restart, NSSM-native log rotation at 5 MB) and start it.
-9. `npm install -g @anthropic-ai/claude-code` into your *user* npm prefix.
-10. Drop `ccp.ps1` + `ccp.cmd` into `%LOCALAPPDATA%\gc2cc\bin\` and add that dir to your **user PATH** (HKCU).
+5. `npm install -g @jeffreycao/copilot-api@2.3.1` into a private prefix at `%LOCALAPPDATA%\gc2cc\npm\global\` (so the LocalSystem service has a stable path independent of the user's npm prefix).
+6. Prompt you once for **GitHub Copilot device-code auth** (skipped on re-runs if a token is already present).
+7. Register the `gc2cc-copilot-api` Windows Service (LocalSystem, auto-start, crash-restart, NSSM-native log rotation at 5 MB) and start it.
+8. `npm install -g @anthropic-ai/claude-code` into your *user* npm prefix.
+9. Drop `ccp.ps1` + `ccp.cmd` into `%LOCALAPPDATA%\gc2cc\bin\` and add that dir to your **user PATH** (HKCU).
 
 Open a **fresh** shell after install so PATH refreshes.
 
 ### Re-running install (upgrade-safe)
 
 `install.ps1` is idempotent and tolerates every prior gc2cc layout we've ever shipped:
-
-The compatibility patch is also idempotent. It covers both HTTP and WebSocket
-Responses transports and sends the original request first. Only when Copilot
-rejects encrypted replay content before any answer or tool output does it
-remove the oldest encrypted reasoning item from the in-memory request and
-retry, up to 32 times. It stops at the first success, does not edit the Codex
-transcript or visible chat messages, and logs only the transport and number of
-removed items.
 
 - **Pre-NSSM Scheduled Task** (`\gc2cc\gc2cc-copilot-api`): stopped and unregistered.
 - **NSSM + bakapiano (git clone + bun)**: stale `copilot-api/` and `run-proxy.ps1` are deleted; the service is removed and re-registered to exec `node` on the new npm-installed `@jeffreycao/copilot-api` entrypoint.
@@ -109,12 +100,14 @@ The installer also tunes the shared `copilot-api` config for Codex stability:
 
 ```json
 {
-  "useResponsesApiContextManagement": false,
+  "contextManagement": {
+    "responses": false
+  },
   "useResponsesApiWebSocket": false
 }
 ```
 
-`useResponsesApiContextManagement=false` leaves compaction to Codex/cxp's 1M-aware client-side limits. `useResponsesApiWebSocket=false` forces HTTP `/responses` streaming instead of Copilot's `ws:/responses` transport, avoiding the proxy WebSocket-to-SSE path that can close before `response.completed`. To test or revert the transport choice, edit `~/.local/share/copilot-api/config.json` and restart `gc2cc-copilot-api`.
+`contextManagement.responses=false` leaves compaction to Codex/cxp's 1M-aware client-side limits. `useResponsesApiWebSocket=false` forces HTTP `/responses` streaming instead of Copilot's `ws:/responses` transport, avoiding the proxy WebSocket-to-SSE path that can close before `response.completed`. To test or revert the transport choice, edit `~/.local/share/copilot-api/config.json` and restart `gc2cc-copilot-api`.
 
 ### First-run wizard
 
@@ -211,7 +204,7 @@ irm https://escapecat.github.io/gc2cc/status.ps1 -OutFile status.ps1
 
 Easiest: `ccp upgrade` — it fetches the latest `install.ps1` from Pages and re-runs it (will trigger UAC). Equivalent to running the one-liner again.
 
-Either path always runs `npm install -g @jeffreycao/copilot-api@1.14.14`, so a re-run keeps the proxy pinned to the tested version (check `package.json` in `%LOCALAPPDATA%\gc2cc\npm\global\node_modules\@jeffreycao\copilot-api\`).
+Either path always runs `npm install -g @jeffreycao/copilot-api@2.3.1`, so a re-run keeps the proxy pinned to the tested version (check `package.json` in `%LOCALAPPDATA%\gc2cc\npm\global\node_modules\@jeffreycao\copilot-api\`).
 
 > **Heads-up:** the upgrade stops the running service, swaps it, and restarts. There's a 1–3s window where `localhost:4141` is unreachable. Don't `ccp upgrade` while a long-running `claude` task is mid-flight.
 
@@ -242,7 +235,7 @@ Switches: `-Port`, `-ServiceName`, `-InstallDir`, `-NpmPackage`, `-NpmRegistry`,
 
 `-InstallClis` accepts a comma-separated list (`ccp`, `cxp`, `ccp,cxp`, or empty string for proxy-only). Without it, the installer prompts interactively. `-NonInteractive` skips the prompt and defaults to `ccp`.
 
-`-NpmPackage` defaults to `@jeffreycao/copilot-api@1.14.14`. Override it to pin another version (`@jeffreycao/copilot-api@1.10.7`) or swap to a different fork (`@somebody-else/copilot-api@latest`) without code changes.
+`-NpmPackage` defaults to `@jeffreycao/copilot-api@2.3.1`. Override it to pin another exact version or swap to a different fork without code changes.
 
 ## Layout
 
