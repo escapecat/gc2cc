@@ -16,13 +16,19 @@ if ($errors) { throw "install.ps1 has parser errors: $errors" }
 
 foreach ($required in @(
     "@jeffreycao/copilot-api@2.3.3",
+    "@openai/codex@0.149.1",
     "Name = 'useResponsesApiWebSocket'; Value = `$false",
     "'contextManagement'",
     "'responses'",
-    "Join-Path `$InstallDir 'patch-copilot-api.ps1'"
+    "Join-Path `$InstallDir 'patch-copilot-api.ps1'",
+    "New-ScheduledTaskPrincipal",
+    "-RunLevel Highest",
+    "-WindowStyle Hidden",
+    "'upgrade-runtime'",
+    "Install-NpmCli -Pkg `$CodexPackage -BinName 'codex' -Upgrade"
 )) {
     if (-not $source.Contains($required)) {
-        throw "install.ps1 is missing expected 2.3.1 migration behavior: $required"
+        throw "install.ps1 is missing expected package migration behavior: $required"
     }
 }
 

@@ -1,4 +1,4 @@
-name: Monthly copilot-api update
+name: Monthly runtime updates
 
 on:
   schedule:
@@ -97,6 +97,82 @@ jobs:
             $number = gh pr list --head $env:UPDATE_BRANCH --base main --state open --json number --jq '.[0].number'
           }
 
+          @{ reviewers = @('escapecat') } | ConvertTo-Json -Compress |
+            gh api "repos/${{ github.repository }}/pulls/$number/requested_reviewers" `
+              --method POST --input -
+
+  codex-update:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NPM_REGISTRY: https://packagefeedproxy.microsoft.io/npm/
+      UPDATE_BRANCH: automation/codex-update
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Check for a stable Codex update
+        id: version
+        shell: pwsh
+        run: |
+          $source = Get-Content install.ps1 -Raw
+          $match = [regex]::Match($source, '@openai/codex@(?<version>\d+\.\d+\.\d+)')
+          if (-not $match.Success) { throw 'Unable to find the pinned Codex version.' }
+          $current = $match.Groups['version'].Value
+          $versions = @(& npm view '@openai/codex' versions --json --registry $env:NPM_REGISTRY | ConvertFrom-Json)
+          $stable = @($versions | Where-Object { $_ -match '^\d+\.\d+\.\d+$' } | ForEach-Object { [version]$_ })
+          if (-not $stable) { throw 'The Microsoft npm proxy returned no stable Codex versions.' }
+          $latest = [string]($stable | Sort-Object -Descending | Select-Object -First 1)
+          "current=$current" >> $env:GITHUB_OUTPUT
+          "latest=$latest" >> $env:GITHUB_OUTPUT
+          $available = ([version]$latest -gt [version]$current).ToString().ToLowerInvariant()
+          "available=$available" >> $env:GITHUB_OUTPUT
+
+      - name: Update the pinned Codex version
+        if: steps.version.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          $current = '${{ steps.version.outputs.current }}'
+          $latest = '${{ steps.version.outputs.latest }}'
+          foreach ($path in @('install.ps1', 'README.md', 'tests/install-package-smoke.ps1')) {
+            $source = Get-Content $path -Raw
+            $updated = $source.Replace("@openai/codex@$current", "@openai/codex@$latest")
+            if ($updated -eq $source) { throw "Expected Codex version reference was not found in $path" }
+            [IO.File]::WriteAllText((Resolve-Path $path), $updated, [Text.UTF8Encoding]::new($false))
+          }
+
+      - name: Run offline smoke tests
+        if: steps.version.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          ./tests/install-package-smoke.ps1
+          ./tests/nssm-configuration-smoke.ps1
+          ./tests/runtime-updater-smoke.ps1
+
+      - name: Create or update Codex pull request
+        if: steps.version.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          $current = '${{ steps.version.outputs.current }}'
+          $latest = '${{ steps.version.outputs.latest }}'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B $env:UPDATE_BRANCH
+          git add install.ps1 README.md tests/install-package-smoke.ps1
+          git commit -m "chore: update Codex to $latest"
+          git push --force-with-lease origin "HEAD:$env:UPDATE_BRANCH"
+          $number = gh pr list --head $env:UPDATE_BRANCH --base main --state open --json number --jq '.[0].number'
+          if (-not $number) {
+            gh pr create --base main --head $env:UPDATE_BRANCH `
+              --title "chore: update Codex to $latest" `
+              --body "Update the pinned stable Codex CLI from $current to $latest. Offline installer tests passed; Mori app-server, tools, images, resume, and MultiAgent require staging before merge."
+            $number = gh pr list --head $env:UPDATE_BRANCH --base main --state open --json number --jq '.[0].number'
+          }
           @{ reviewers = @('escapecat') } | ConvertTo-Json -Compress |
             gh api "repos/${{ github.repository }}/pulls/$number/requested_reviewers" `
               --method POST --input -
