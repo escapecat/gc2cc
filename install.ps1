@@ -27,6 +27,7 @@ param(
     [string] $ServiceName  = 'gc2cc-copilot-api',
     [string] $InstallDir   = (Join-Path $env:LOCALAPPDATA 'gc2cc'),
     [string] $NpmPackage   = '@jeffreycao/copilot-api@2.3.3',
+    [string] $CodexPackage = '@openai/codex@0.149.1',
     [string] $NpmRegistry  = '',
     [string] $PagesBaseUrl = 'https://escapecat.github.io/gc2cc',
     # Primary: vendored zip on our own GitHub Release (byte-identical mirror
@@ -252,6 +253,7 @@ if (-not $isAdmin) {
                  '-ServiceName',$ServiceName,
                  '-InstallDir',"`"$InstallDir`"",
                  '-NpmPackage',"`"$NpmPackage`"",
+                 '-CodexPackage',"`"$CodexPackage`"",
                  '-PagesBaseUrl',$PagesBaseUrl,
                  '-NssmZipUrl',$NssmZipUrl,
                  '-NssmUpstreamUrl',$NssmUpstreamUrl,
@@ -629,6 +631,55 @@ if (-not $ready) {
 }
 Ok "Service running: http://localhost:$Port"
 
+# ---------- 7b. fixed-command privileged runtime updater ----------
+# Mori remains a normal user process. This task is the only elevated operation
+# it may request, and its action/arguments live under administrator-owned paths.
+$updaterRoot = Join-Path $env:ProgramData 'gc2cc-updater'
+$updaterProgramRoot = Join-Path $env:ProgramFiles 'gc2cc-updater'
+$updaterScript = Join-Path $updaterProgramRoot 'upgrade-runtime.ps1'
+$updaterConfig = Join-Path $updaterRoot 'config.json'
+New-Item -ItemType Directory -Force -Path $updaterRoot, $updaterProgramRoot | Out-Null
+$localUpdater = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'upgrade-runtime.ps1' } else { '' }
+if ($localUpdater -and (Test-Path -LiteralPath $localUpdater)) {
+    Copy-Item -LiteralPath $localUpdater -Destination $updaterScript -Force
+} else {
+    Invoke-WebRequest -Uri "$PagesBaseUrl/upgrade-runtime.ps1" -OutFile $updaterScript -UseBasicParsing
+}
+[ordered]@{
+    pages_base_url = $PagesBaseUrl
+    install_dir = $InstallDir
+    user_home = $UserHome
+    service_name = $ServiceName
+    port = $Port
+    npm_registry = $NpmRegistry
+    install_clis = $InstallClis
+} | ConvertTo-Json | Set-Content -LiteralPath $updaterConfig -Encoding UTF8
+
+$updaterTaskName = 'upgrade-runtime'
+$updaterTaskPath = '\gc2cc\'
+$updaterAction = New-ScheduledTaskAction `
+    -Execute 'powershell.exe' `
+    -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$updaterScript`""
+$updaterPrincipal = New-ScheduledTaskPrincipal `
+    -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
+    -LogonType Interactive `
+    -RunLevel Highest
+$updaterSettings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
+    -MultipleInstances IgnoreNew `
+    -StartWhenAvailable
+Register-ScheduledTask `
+    -TaskName $updaterTaskName `
+    -TaskPath $updaterTaskPath `
+    -Action $updaterAction `
+    -Principal $updaterPrincipal `
+    -Settings $updaterSettings `
+    -Description 'Upgrade the fixed gc2cc runtime after an explicit Mori approval.' `
+    -Force | Out-Null
+Ok "Privileged runtime updater registered: $updaterTaskPath$updaterTaskName"
+
 # ---------- 8. Claude Code CLI ----------
 # We're elevated here, so plain `npm install -g` would land in the admin
 # profile's prefix. Pin npm's prefix to the invoking user's npm dir so
@@ -639,8 +690,8 @@ if ($env:USERPROFILE -ne $UserHome) {
 }
 
 function Install-NpmCli {
-    param([string]$Pkg, [string]$BinName)
-    if (Get-Command $BinName -ErrorAction SilentlyContinue) {
+    param([string]$Pkg, [string]$BinName, [switch]$Upgrade)
+    if (-not $Upgrade -and (Get-Command $BinName -ErrorAction SilentlyContinue)) {
         Ok "$BinName CLI present: $((Get-Command $BinName).Source)"
         return
     }
@@ -719,7 +770,7 @@ stream_idle_timeout_ms = 900000
 }
 
 if ($WantCxp) {
-    Install-NpmCli -Pkg '@openai/codex' -BinName 'codex'
+    Install-NpmCli -Pkg $CodexPackage -BinName 'codex' -Upgrade
 
     $CodexHome = Join-Path $InstallDir 'codex-home'
     New-Item -ItemType Directory -Force -Path $CodexHome | Out-Null

@@ -35,7 +35,8 @@ The installer will:
 6. Prompt you once for **GitHub Copilot device-code auth** (skipped on re-runs if a token is already present).
 7. Register the `gc2cc-copilot-api` Windows Service (LocalSystem, auto-start, crash-restart, NSSM-native log rotation at 5 MB) and start it.
 8. `npm install -g @anthropic-ai/claude-code` into your *user* npm prefix.
-9. Drop `ccp.ps1` + `ccp.cmd` into `%LOCALAPPDATA%\gc2cc\bin\` and add that dir to your **user PATH** (HKCU).
+9. Install the pinned stable `@openai/codex@0.149.1` when `cxp` is selected.
+10. Drop `ccp.ps1` + `ccp.cmd` into `%LOCALAPPDATA%\gc2cc\bin\` and add that dir to your **user PATH** (HKCU).
 
 Open a **fresh** shell after install so PATH refreshes.
 
@@ -215,6 +216,19 @@ single upgrade PR, and requests review from `@escapecat`. The review request
 appears in GitHub Notifications and is also emailed when review-request email
 notifications are enabled. Version PRs are never merged or deployed
 automatically; the staging checks listed in the PR remain required.
+
+The same workflow independently checks stable Codex CLI versions. It considers
+only exact `x.y.z` releases from the Microsoft npm proxy, excluding alpha,
+beta, and platform-suffixed packages. Codex updates use a separate PR and the
+same explicit review and staging gate.
+
+The installer also registers a fixed-command elevated task at
+`\gc2cc\upgrade-runtime`. Mori can request this task after the user explicitly
+approves an upgrade and all local Agent turns are idle. The task accepts no
+command, URL, or package arguments from Mori; it downloads only the allowlisted
+gc2cc installer, runs without a visible console, and writes status under
+`%ProgramData%\gc2cc-updater\`. Installing or changing the task still requires
+administrator approval, but subsequent approved upgrades do not require RDP.
 
 ## Uninstall
 
