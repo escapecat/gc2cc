@@ -13,9 +13,14 @@ $errors = $null
     [ref]$errors
 ) | Out-Null
 if ($errors) { throw "install.ps1 has parser errors: $errors" }
+$digest = [regex]::Match($source, "\`$ProxyPackageSha256\s*=\s*'([a-f0-9]{64})'").Groups[1].Value
+if (-not $digest -or $digest -eq ('0' * 64)) { throw 'Installer does not pin a released proxy digest' }
 
 foreach ($required in @(
-    "@jeffreycao/copilot-api@2.3.3",
+    "https://github.com/escapecat/copilot-api/releases/download/gc2cc-v",
+    "Resolve-OwnedProxyPackage -Package `$NpmPackage -Sha256 `$ProxyPackageSha256",
+    "npm.cmd install -g `$verifiedProxyPackage",
+    "Native agent sessions are still open.",
     "@openai/codex@0.149.1",
     "Name = 'useResponsesApiWebSocket'; Value = `$false",
     "'contextManagement'",
@@ -34,6 +39,7 @@ foreach ($required in @(
 
 foreach ($forbidden in @(
     '@jeffreycao/copilot-api@1.14.14',
+    'npm.cmd install -g $NpmPackage',
     'Resolve-CopilotPatchPath',
     'useResponsesApiContextManagement',
     'encrypted replay recovery is installed'

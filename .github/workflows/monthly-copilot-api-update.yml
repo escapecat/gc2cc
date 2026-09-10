@@ -25,21 +25,25 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Check for an installable update
+      - name: Check for a validated owned proxy release
         id: version
         shell: pwsh
         run: |
           $source = Get-Content install.ps1 -Raw
-          $match = [regex]::Match($source, '@jeffreycao/copilot-api@(?<version>\d+\.\d+\.\d+)')
+          $match = [regex]::Match($source, 'gc2cc-v(?<version>\d+\.\d+\.\d+-gc2cc\.\d+)')
           if (-not $match.Success) { throw 'Unable to find the pinned copilot-api version.' }
           $current = $match.Groups['version'].Value
-          $latest = (& npm view '@jeffreycao/copilot-api' version --registry $env:NPM_REGISTRY).Trim()
-          if ($LASTEXITCODE -ne 0 -or $latest -notmatch '^\d+\.\d+\.\d+$') {
-            throw "Unable to resolve a stable copilot-api version from $env:NPM_REGISTRY"
-          }
+          $release = gh api repos/escapecat/copilot-api/releases/latest | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $release.tag_name -notmatch '^gc2cc-v(\d+\.\d+\.\d+-gc2cc\.\d+)$') { throw 'No validated owned proxy release found' }
+          $latest = $Matches[1]
+          $assetName = "jeffreycao-copilot-api-$latest.tgz"
+          $asset = $release.assets | Where-Object name -eq $assetName
+          if (-not $asset -or -not ($release.assets | Where-Object name -eq "$assetName.sha256")) { throw 'Owned package or digest asset missing' }
+          if ($asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw 'Invalid owned package digest' }
+          "digest=$($Matches[1].ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "current=$current" >> $env:GITHUB_OUTPUT
           "latest=$latest" >> $env:GITHUB_OUTPUT
-          $available = ([version]$latest -gt [version]$current).ToString().ToLowerInvariant()
+          $available = ([version]($latest.Replace('-gc2cc.', '.')) -gt [version]($current.Replace('-gc2cc.', '.'))).ToString().ToLowerInvariant()
           "available=$available" >> $env:GITHUB_OUTPUT
 
       - name: Update the pinned version
@@ -48,9 +52,12 @@ jobs:
         run: |
           $current = '${{ steps.version.outputs.current }}'
           $latest = '${{ steps.version.outputs.latest }}'
-          foreach ($path in @('install.ps1', 'README.md', 'tests/install-package-smoke.ps1')) {
+          foreach ($path in @('install.ps1', 'README.md')) {
             $source = Get-Content $path -Raw
-            $updated = $source.Replace("@jeffreycao/copilot-api@$current", "@jeffreycao/copilot-api@$latest")
+            $updated = $source.Replace($current, $latest)
+            if ($path -eq 'install.ps1') {
+              $updated = [regex]::Replace($updated, "(\`$ProxyPackageSha256\s*=\s*')[a-fA-F0-9]{64}(')", ('${1}' + '${{ steps.version.outputs.digest }}' + '${2}'))
+            }
             if ($updated -eq $source) { throw "Expected version reference was not found in $path" }
             [IO.File]::WriteAllText((Resolve-Path $path), $updated, [Text.UTF8Encoding]::new($false))
           }
@@ -60,6 +67,8 @@ jobs:
         shell: pwsh
         run: |
           ./tests/install-package-smoke.ps1
+          ./tests/owned-proxy-package-smoke.ps1
+          ./tests/monthly-owned-release-smoke.ps1
           ./tests/nssm-configuration-smoke.ps1
 
       - name: Create or update pull request
@@ -71,7 +80,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git checkout -B $env:UPDATE_BRANCH
-          git add install.ps1 README.md tests/install-package-smoke.ps1
+          git add install.ps1 README.md
           git commit -m "chore: update copilot-api to $latest"
           git push --force-with-lease origin "HEAD:$env:UPDATE_BRANCH"
 
@@ -80,10 +89,11 @@ jobs:
             $body = @"
           ## Summary
           - update the pinned copilot-api package from $current to $latest
-          - use the latest stable version available from the Microsoft npm proxy
+          - install an immutable owned GitHub release and pin its SHA-256
 
           ## Automated validation
           - install package smoke test
+          - owned proxy origin, integrity, and cache tests
           - NSSM configuration smoke test
 
           ## Manual validation required before merge
