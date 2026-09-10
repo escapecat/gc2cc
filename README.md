@@ -15,7 +15,7 @@ What this gives you:
 - At install time you pick which wrappers to deploy (ccp, cxp, both, or neither).
 - The `ccp.cmd` / `cxp.cmd` shims invoke Windows PowerShell by absolute system path, so they keep working even in shells whose PATH has not refreshed after install.
 - The model menu is **built dynamically** from the proxy's `/v1/models` — restart the service and any new Copilot model (gpt-5.5, gpt-5.6, claude-opus-4.8, …) shows up automatically. No need to bump `ccp.ps1`.
-- The proxy is [`caozhiyuan/copilot-api`](https://github.com/caozhiyuan/copilot-api) (a.k.a. `@jeffreycao/copilot-api` on npm) — the actively maintained fork of `ericc-ch/copilot-api`. Translates between Anthropic Messages / OpenAI Chat Completions / OpenAI Responses APIs so 1M-context Claude models, gpt-5.5 / 5.4 / 5.3-codex, and Anthropic-native features (`interleaved-thinking`, `advanced-tool-use`, `context-management`) all work end-to-end through Claude Code.
+- The proxy is our maintained [`escapecat/copilot-api`](https://github.com/escapecat/copilot-api/tree/gc2cc/stable) build, based on upstream [`caozhiyuan/copilot-api`](https://github.com/caozhiyuan/copilot-api) 2.3.3. It retains the package name `@jeffreycao/copilot-api` for the service entrypoint, but installs a versioned GitHub release tarball with a pinned SHA-256, not the upstream npm release. The current owned build is `2.3.3-gc2cc.1`.
 
 ## Install
 
@@ -31,7 +31,7 @@ The installer will:
 2. Install missing prereqs (`node`, `winget`) — `git` and `bun` are no longer required.
 3. Read and print the global npm source (`npm config get registry --location=global`); every package install explicitly uses that URL via `--registry`.
 4. Download `nssm.exe` from our GitHub Release mirror into `%LOCALAPPDATA%\gc2cc\bin\` (with `nssm.cc` as fallback).
-5. `npm install -g @jeffreycao/copilot-api@2.3.3` into a private prefix at `%LOCALAPPDATA%\gc2cc\npm\global\` (so the LocalSystem service has a stable path independent of the user's npm prefix).
+5. Download the immutable owned proxy tarball, verify the pinned SHA-256, then install that verified local package into `%LOCALAPPDATA%\gc2cc\npm\global\`. Dependencies still use the selected npm registry. A failed download or digest mismatch leaves the installed proxy untouched.
 6. Prompt you once for **GitHub Copilot device-code auth** (skipped on re-runs if a token is already present).
 7. Register the `gc2cc-copilot-api` Windows Service (LocalSystem, auto-start, crash-restart, NSSM-native log rotation at 5 MB) and start it.
 8. `npm install -g @anthropic-ai/claude-code` into your *user* npm prefix.
@@ -41,6 +41,19 @@ The installer will:
 Open a **fresh** shell after install so PATH refreshes.
 
 ### Re-running install (upgrade-safe)
+
+The owned Copilot Responses request boundary counts user and tool-result images.
+Above the upstream's 50-image limit, only the oldest images before the current
+user turn are omitted from that request, with explicit text markers. Original
+chat history, image files, current-turn images, and user text are not deleted or
+rewritten. A current turn that itself exceeds the limit fails clearly rather
+than silently dropping fresh evidence. This also lets a text-only follow-up
+recover an older image-heavy session. Other provider routes are unchanged.
+
+Updates remain pinned to owned builds. The monthly proxy-update PR checks our
+GitHub release assets and digest, never switches back to an upstream npm package.
+Run runtime upgrades only after active work has finished; Mori's existing device
+upgrade flow closes its runtime lanes and uses the fixed privileged updater.
 
 `install.ps1` is idempotent and tolerates every prior gc2cc layout we've ever shipped:
 

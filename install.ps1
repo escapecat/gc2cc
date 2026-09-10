@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     - Installs prereqs (git, node) via winget if missing. (No longer needs bun.)
-    - Installs caozhiyuan/copilot-api globally via npm (`@jeffreycao/copilot-api`).
+    - Installs an integrity-pinned escapecat/copilot-api release via npm.
     - Runs the interactive GitHub Copilot device-code auth flow once.
     - Registers a Windows Service `gc2cc-copilot-api` via NSSM that runs the
       proxy as LocalSystem, auto-restarts on crash, and rotates logs natively.
@@ -26,7 +26,8 @@ param(
     [int]    $Port         = 4141,
     [string] $ServiceName  = 'gc2cc-copilot-api',
     [string] $InstallDir   = (Join-Path $env:LOCALAPPDATA 'gc2cc'),
-    [string] $NpmPackage   = '@jeffreycao/copilot-api@2.3.3',
+    [string] $NpmPackage   = 'https://github.com/escapecat/copilot-api/releases/download/gc2cc-v2.3.3-gc2cc.1/jeffreycao-copilot-api-2.3.3-gc2cc.1.tgz',
+    [string] $ProxyPackageSha256 = 'adab5f8fbf52362d9f84b2aa9e351a19e00ac6456edc4253895f1777c2d7dbfe',
     [string] $CodexPackage = '@openai/codex@0.149.1',
     [string] $NpmRegistry  = '',
     [string] $PagesBaseUrl = 'https://escapecat.github.io/gc2cc',
@@ -59,6 +60,32 @@ $ErrorActionPreference = 'Stop'
 
 # ---------- helpers ----------
 function Info ($m) { Write-Host "[gc2cc] $m" -ForegroundColor Cyan }
+function Resolve-OwnedProxyPackage {
+    param([string]$Package, [string]$Sha256, [string]$Directory)
+    if ($Package -notmatch '^https://github\.com/escapecat/copilot-api/releases/download/gc2cc-v[0-9]+\.[0-9]+\.[0-9]+-gc2cc\.[0-9]+/jeffreycao-copilot-api-[0-9]+\.[0-9]+\.[0-9]+-gc2cc\.[0-9]+\.tgz$') {
+        throw 'Proxy package must be an immutable escapecat/copilot-api gc2cc release.'
+    }
+    if ($Sha256 -notmatch '^[a-fA-F0-9]{64}$' -or $Sha256 -eq ('0' * 64)) {
+        throw 'Proxy package requires a pinned SHA-256 digest.'
+    }
+    $packageDirectory = [IO.Path]::GetFullPath($Directory)
+    New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
+    $packagePath = Join-Path $packageDirectory ("copilot-api-$($Sha256.ToLowerInvariant()).tgz")
+    if ((Test-Path -LiteralPath $packagePath) -and (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash -eq $Sha256) {
+        return $packagePath
+    }
+    $downloadPath = Join-Path $packageDirectory ("download-$([guid]::NewGuid().ToString('N')).tgz")
+    try {
+        Invoke-WebRequest -Uri $Package -OutFile $downloadPath -UseBasicParsing
+        if ((Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash -ne $Sha256) {
+            throw 'Proxy package SHA-256 mismatch; the existing installation was not changed.'
+        }
+        Move-Item -LiteralPath $downloadPath -Destination $packagePath -Force
+        return $packagePath
+    } finally {
+        if (Test-Path -LiteralPath $downloadPath) { Remove-Item -LiteralPath $downloadPath -Force }
+    }
+}
 function Ok   ($m) { Write-Host "[gc2cc] $m" -ForegroundColor Green }
 function Warn ($m) { Write-Host "[gc2cc] $m" -ForegroundColor Yellow }
 function Die  ($m) {
@@ -253,6 +280,7 @@ if (-not $isAdmin) {
                  '-ServiceName',$ServiceName,
                  '-InstallDir',"`"$InstallDir`"",
                  '-NpmPackage',"`"$NpmPackage`"",
+                 '-ProxyPackageSha256',"`"$ProxyPackageSha256`"",
                  '-CodexPackage',"`"$CodexPackage`"",
                  '-PagesBaseUrl',$PagesBaseUrl,
                  '-NssmZipUrl',$NssmZipUrl,
@@ -365,6 +393,13 @@ $NpmGlobal = Join-Path $NpmRoot 'global'
 $NpmCache  = Join-Path $NpmRoot 'cache'
 New-Item -ItemType Directory -Force -Path $NpmGlobal, $NpmCache | Out-Null
 
+$verifiedProxyPackage = Resolve-OwnedProxyPackage -Package $NpmPackage -Sha256 $ProxyPackageSha256 -Directory (Join-Path $NpmRoot 'packages')
+if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+    $openAgentProcesses = @(Get-CimInstance Win32_Process -Filter "Name='codex.exe' OR Name='claude.exe'")
+    if ($openAgentProcesses.Count -gt 0) {
+        throw 'Native agent sessions are still open. Finish current work and use the Mori device upgrade flow, or close CXP/CCP before retrying. The installed proxy was not changed.'
+    }
+}
 Info "Installing $NpmPackage into $NpmGlobal (registry=$NpmRegistry) ..."
 # --prefix scopes the global install to our directory. --no-fund/--no-audit
 # drop the well-known noise; -s would ALSO swallow the real failure reason, so
@@ -388,7 +423,7 @@ try {
     # Node 22.18.0): `& npm install` is mangled into subcommand "pm" -> npm dies
     # with `Unknown command: "pm"`. The .cmd shim bypasses npm.ps1 entirely.
     # See npm/cli#8528.
-    $npmOutput = & npm.cmd install -g $NpmPackage `
+    $npmOutput = & npm.cmd install -g $verifiedProxyPackage `
         --prefix $NpmGlobal `
         --cache $NpmCache `
         --registry $NpmRegistry `

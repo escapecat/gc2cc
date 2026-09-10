@@ -1,0 +1,20 @@
+name: Installer CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate offline installer boundaries
+        shell: pwsh
+        run: |
+          ./tests/install-package-smoke.ps1
+          ./tests/owned-proxy-package-smoke.ps1
+          ./tests/monthly-owned-release-smoke.ps1
+          ./tests/nssm-configuration-smoke.ps1
+          ./tests/runtime-updater-smoke.ps1
