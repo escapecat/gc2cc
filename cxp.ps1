@@ -273,6 +273,7 @@ function Get-AvailableModels {
             owner   = $_.owned_by
             efforts = $_.capabilities.supports.reasoning_effort
             ctx     = $_.capabilities.limits.max_context_window_tokens
+            maxPrompt = $_.capabilities.limits.max_prompt_tokens
             maxOut  = $_.capabilities.limits.max_output_tokens
         }
     }
@@ -605,7 +606,7 @@ function Invoke-ModelPicker {
 # We still pass matching `model_context_window`,
 # `model_auto_compact_token_limit`, and `model_auto_compact_token_limit_scope`
 # startup overrides below, because Codex's session config path is the final
-# source for the BodyAfterPrefix compaction scope.
+# source for the full-context compaction scope.
 #
 # Source: `codex debug models` (codex's own ModelsResponse), NOT a hand-written
 # file or a download. codex emits every field correctly — including the
@@ -614,11 +615,40 @@ function Invoke-ModelPicker {
 #
 # auto_compact_token_limit is patched too so both Codex's model metadata and
 # session config paths agree on the same trigger.
-function Set-CodexCatalogModelLimits($model, [int64]$ctx) {
-    $model | Add-Member -MemberType NoteProperty -Name context_window -Value $ctx -Force
-    $model | Add-Member -MemberType NoteProperty -Name max_context_window -Value $ctx -Force
+function Get-CodexContextBudget($metadata) {
+    if (-not $metadata -or -not $metadata.ctx) { return $null }
+    $contextWindow = [int64]$metadata.ctx
+    $maxOutput = [math]::Max(0, [int64]$metadata.maxOut)
+    $inputLimit = $contextWindow - $maxOutput
+    if ([int64]$metadata.maxPrompt -gt 0) {
+        $inputLimit = [math]::Min($inputLimit, [int64]$metadata.maxPrompt)
+    }
+    if ($inputLimit -le 0) { throw '[cxp] Provider token limits leave no capacity for input.' }
+    # Compaction also has to fit the input limit. Leave room for new tool output
+    # and accounting differences; the combined input/output window is not that limit.
+    return [pscustomobject]@{
+        contextWindow = $contextWindow
+        inputLimit = [int64]$inputLimit
+        autoCompactLimit = [math]::Max(1, [int64][math]::Floor($inputLimit * 0.8))
+    }
+}
+
+function Get-CodexContextArguments($metadata) {
+    $budget = Get-CodexContextBudget $metadata
+    if (-not $budget) { return }
+    return @(
+        '-c', "model_context_window=$($budget.contextWindow)",
+        '-c', "model_auto_compact_token_limit=$($budget.autoCompactLimit)",
+        '-c', 'model_auto_compact_token_limit_scope="total"'
+    )
+}
+
+function Set-CodexCatalogModelLimits($model, $metadata) {
+    $budget = Get-CodexContextBudget $metadata
+    $model | Add-Member -MemberType NoteProperty -Name context_window -Value $budget.contextWindow -Force
+    $model | Add-Member -MemberType NoteProperty -Name max_context_window -Value $budget.contextWindow -Force
     $model | Add-Member -MemberType NoteProperty -Name auto_compact_token_limit `
-        -Value ([int64][math]::Floor($ctx * 0.9)) -Force
+        -Value $budget.autoCompactLimit -Force
 }
 
 function Get-CodexCatalogTemplate($catalogModels, $modelId) {
@@ -650,7 +680,7 @@ function Merge-CodexCatalogModels($catalogModels, $models) {
     foreach ($model in $merged) {
         $hit = $models | Where-Object { $_.id -eq $model.slug } | Select-Object -First 1
         if ($hit -and $hit.ctx) {
-            Set-CodexCatalogModelLimits $model ([int64]$hit.ctx)
+            Set-CodexCatalogModelLimits $model $hit
         }
     }
 
@@ -668,7 +698,7 @@ function Merge-CodexCatalogModels($catalogModels, $models) {
         $clone = ($template | ConvertTo-Json -Depth 100 -Compress) | ConvertFrom-Json
         $clone.slug = $hit.id
         $clone.display_name = Get-CodexCatalogDisplayName $hit.id
-        Set-CodexCatalogModelLimits $clone ([int64]$hit.ctx)
+        Set-CodexCatalogModelLimits $clone $hit
         $merged += $clone
     }
     return $merged
@@ -735,7 +765,7 @@ function Set-CodexTomlOverrides($catalogPath) {
     $catalogToml = ($catalogPath -replace '\\', '/')
     $managed = @(
         ('model_catalog_json = "{0}"' -f $catalogToml),
-        'model_auto_compact_token_limit_scope = "body_after_prefix"'
+        'model_auto_compact_token_limit_scope = "total"'
     ) -join "`r`n"
 
     $raw = Get-Content $cfgPath -Raw
@@ -803,17 +833,9 @@ function Invoke-CodexWithModel($mainModel, $cfg, $passthrough, $stdinInput) {
             }
         }
     }
-    $autoCompactLimit = $null
-    if ($meta.ctx) {
-        $ctx = [int64]$meta.ctx
-        $autoCompactLimit = [int64][math]::Floor($ctx * 0.9)
-        $codexArgs += @("-c", "model_context_window=$ctx")
-        $codexArgs += @("-c", "model_auto_compact_token_limit=$autoCompactLimit")
-        # Codex 0.141.0 defaults this to `total`, whose pre-turn compact path
-        # only reads model metadata. `body_after_prefix` reads the explicit
-        # config limit first and separately guards the full effective window.
-        $codexArgs += @("-c", "model_auto_compact_token_limit_scope=`"body_after_prefix`"")
-    }
+    $contextBudget = Get-CodexContextBudget $meta
+    $autoCompactLimit = if ($contextBudget) { $contextBudget.autoCompactLimit } else { $null }
+    $codexArgs += @(Get-CodexContextArguments $meta)
     if ($meta.maxOut) { $codexArgs += @("-c", "model_max_output_tokens=$($meta.maxOut)") }
     $bypassEnabled = [bool]$cfg.bypassPermissions
     if ($bypassEnabled) {
@@ -829,10 +851,11 @@ function Invoke-CodexWithModel($mainModel, $cfg, $passthrough, $stdinInput) {
     }
     $effNote = if ($eff) { $eff } else { '(codex default)' }
     $ctxNote = if ($meta.ctx) { '{0}K' -f [int]($meta.ctx / 1000) } else { '?' }
+    $inputNote = if ($contextBudget) { '{0}K' -f [int]($contextBudget.inputLimit / 1000) } else { '?' }
     $compactNote = if ($autoCompactLimit) { '{0}K' -f [int]($autoCompactLimit / 1000) } else { '?' }
     $catNote = if ($catalogPath) { 'catalog' } else { 'bundled(272K cap)' }
     $bypassNote = if ($bypassEnabled) { 'on' } else { 'off' }
-    Write-Host ('[cxp] model={0}  effort={1}  bypass={2}  ctx={3}  autoCompactAt={4}  compactScope=body_after_prefix  via={5}  CODEX_HOME={6}' -f $mainModel, $effNote, $bypassNote, $ctxNote, $compactNote, $catNote, $codexHome) -ForegroundColor Cyan
+    Write-Host ('[cxp] model={0}  effort={1}  bypass={2}  ctx={3}  autoCompactAt={4}  compactScope=total  via={5}  CODEX_HOME={6}  inputLimit={7}' -f $mainModel, $effNote, $bypassNote, $ctxNote, $compactNote, $catNote, $codexHome, $inputNote) -ForegroundColor Cyan
     if ($null -ne $stdinInput) {
         $stdinInput | & codex @codexArgs @passthrough
     } else {
