@@ -824,9 +824,8 @@ if ($WantCxp) {
 
 model_provider = "gc2cc"
 model = "gpt-5.5"
-# Keep Codex's pre-turn compactor on the path that honors cxp's explicit
-# model_auto_compact_token_limit, while still guarding the full effective window.
-model_auto_compact_token_limit_scope = "body_after_prefix"
+# Count the preserved prefix too; cxp keeps catalog and launch thresholds aligned.
+model_auto_compact_token_limit_scope = "total"
 # Quiet sandbox defaults so codex runs interactively without prompting on every
 # tool call. Adjust via `cxp` flags or by editing this file -- your edits stick.
 approval_policy = "on-failure"

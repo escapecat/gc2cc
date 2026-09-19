@@ -22,6 +22,7 @@ foreach ($required in @(
     "npm.cmd install -g `$verifiedProxyPackage",
     "Native agent sessions are still open.",
     "@openai/codex@0.149.1",
+    'model_auto_compact_token_limit_scope = "total"',
     "Name = 'useResponsesApiWebSocket'; Value = `$false",
     "'contextManagement'",
     "'responses'",

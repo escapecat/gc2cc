@@ -90,7 +90,13 @@ cxp ccsm                              # register cxp in ccsm without stopping cc
 cxp --help                            # show cxp usage + current settings
 ```
 
-`cxp` uses an isolated `CODEX_HOME` at `%LOCALAPPDATA%\gc2cc\codex-home\` — codex's own state (project trust, NUX flags, etc.) lands there, never in your user `~/.codex`. Only models that expose `/v1/responses` are listed (Anthropic-native Claude models are filtered out, since codex dropped `wire_api = "chat"`). On launch it patches Codex's model catalog from the proxy's `/v1/models` limits and prints `ctx` plus `autoCompactAt`; for 1M-capable GPT models you should see about `ctx=1050K autoCompactAt=945K`, not the bundled ~272K window. By default, `cxp` also launches Codex with `--sandbox danger-full-access --ask-for-approval never`; use `cxp config` to turn that off.
+`cxp` uses an isolated `CODEX_HOME` at `%LOCALAPPDATA%\gc2cc\codex-home\` — codex's own state (project trust, NUX flags, etc.) lands there, never in your user `~/.codex`. Only models that expose `/v1/responses` are listed (Anthropic-native Claude models are filtered out, since codex dropped `wire_api = "chat"`). On launch it patches Codex's model catalog from the proxy's `/v1/models` limits and prints `ctx`, `inputLimit`, and `autoCompactAt`. The input ceiling is the smaller of `max_prompt_tokens` and the context window minus maximum output. Native compaction starts at 80% of that ceiling, counting the whole active context including any preserved prefix. For a model advertising a 1,050,000-token window, 922,000-token input limit, and 128,000-token maximum output, the trigger is 737,600 tokens. Catalog and launch configuration use the same calculation, including after resume. By default, `cxp` also launches Codex with `--sandbox danger-full-access --ask-for-approval never`; use `cxp config` to turn that off.
+
+This reserve reduces the risk of crossing the input limit before compaction; it is
+not a guarantee against an arbitrarily large single message or tool result. The
+wrapper neither truncates history nor creates a replacement conversation. A
+conversation already beyond the upstream limit still needs separate diagnosis;
+lowering a future compaction threshold does not shrink its existing input.
 
 The managed provider's display name is intentionally `OpenAI`. `copilot-api`
 requires that exact identity for Codex encrypted Responses/tool-content and
