@@ -35,7 +35,7 @@ The installer will:
 6. Prompt you once for **GitHub Copilot device-code auth** (skipped on re-runs if a token is already present).
 7. Register the `gc2cc-copilot-api` Windows Service (LocalSystem, auto-start, crash-restart, NSSM-native log rotation at 5 MB) and start it.
 8. `npm install -g @anthropic-ai/claude-code` into your *user* npm prefix.
-9. Install the pinned stable `@openai/codex@0.149.1` when `cxp` is selected.
+9. Install the pinned stable `@openai/codex@0.156.1` when `cxp` is selected.
 10. Drop `ccp.ps1` + `ccp.cmd` into `%LOCALAPPDATA%\gc2cc\bin\` and add that dir to your **user PATH** (HKCU).
 
 Open a **fresh** shell after install so PATH refreshes.
