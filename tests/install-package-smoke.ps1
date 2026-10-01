@@ -21,7 +21,7 @@ foreach ($required in @(
     "Resolve-OwnedProxyPackage -Package `$NpmPackage -Sha256 `$ProxyPackageSha256",
     "npm.cmd install -g `$verifiedProxyPackage",
     "Native agent sessions are still open.",
-    "@openai/codex@0.149.1",
+    "@openai/codex@0.156.1",
     'model_auto_compact_token_limit_scope = "total"',
     "Name = 'useResponsesApiWebSocket'; Value = `$false",
     "'contextManagement'",

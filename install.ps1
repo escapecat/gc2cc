@@ -28,7 +28,7 @@ param(
     [string] $InstallDir   = (Join-Path $env:LOCALAPPDATA 'gc2cc'),
     [string] $NpmPackage   = 'https://github.com/escapecat/copilot-api/releases/download/gc2cc-v2.3.3-gc2cc.1/jeffreycao-copilot-api-2.3.3-gc2cc.1.tgz',
     [string] $ProxyPackageSha256 = 'adab5f8fbf52362d9f84b2aa9e351a19e00ac6456edc4253895f1777c2d7dbfe',
-    [string] $CodexPackage = '@openai/codex@0.149.1',
+    [string] $CodexPackage = '@openai/codex@0.156.1',
     [string] $NpmRegistry  = '',
     [string] $PagesBaseUrl = 'https://escapecat.github.io/gc2cc',
     # Primary: vendored zip on our own GitHub Release (byte-identical mirror
